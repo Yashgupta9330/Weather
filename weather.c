@@ -1,60 +1,90 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <curl/curl.h>
-#include <cJSON.h>
-// Function to handle CURL write callback
-size_t write_callback(char *data, size_t size, size_t nmemb, char *buffer) {
-size_t total_size = size * nmemb;
-buffer = realloc(buffer, total_size + 1);
-if(buffer == NULL) {
-printf("Error: Unable to allocate memory.\n");
-return 0;
+#include <json-c/json.h>
+
+struct MemoryStruct {
+    char *memory;
+    size_t size;
+};
+
+static size_t writeMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realSize = size * nmemb;
+    struct MemoryStruct *mem = (struct MemoryStruct *)userp;
+
+    char *ptr = realloc(mem->memory, mem->size + realSize + 1);
+    if(ptr == NULL) {
+        printf("Not enough memory!");
+        return 0;
+    }
+
+    mem->memory = ptr;
+    memcpy(&(mem->memory[mem->size]), contents, realSize);
+    mem->size += realSize;
+    mem->memory[mem->size] = '\0';
+
+    return realSize;
 }
-strncat(buffer, data, total_size);
-return total_size;
-}
-int main() {
-CURL *curl;
-CURLcode res;
-char *weather_api_url = "http://api.openweathermap.org/data/2.5/weather?q=New+York&appid=YOUR_API_KEY";
-char *api_key = "3f92114c01a3d0f4c9962e0f1004278a";
-char *buffer = malloc(4096 * sizeof(char));
-if(buffer == NULL) {
-printf("Error: Unable to allocate memory.\n");
-return 1;
-}
-buffer[0] = '\0';
-curl = curl_easy_init();
-if(curl) {
-char request_url[512];
-sprintf(request_url, "%s?apikey=%s", weather_api_url, api_key);
-curl_easy_setopt(curl, CURLOPT_URL, request_url);
-curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-curl_easy_setopt(curl, CURLOPT_WRITEDATA, buffer);
-res = curl_easy_perform(curl);
-if(res != CURLE_OK) {
-printf("Error: %s\n", curl_easy_strerror(res));
-return 1;
-}
-curl_easy_cleanup(curl);
-// Parse JSON response
-cJSON *json = cJSON_Parse(buffer);
-if(json == NULL) {
-printf("Error: Failed to parsse JSON.\n");
-free(buffer);
-return 1;
-}
-// Extract desired weather data from JSON
-cJSON *temperature = cJSON_GetObjectItem(json, "temperature");
-cJSON *humidity = cJSON_GetObjectItem(json, "humidity");
-cJSON *description = cJSON_GetObjectItem(json, "description");
-// Display weather data
-printf("Temperature: %.2fÃ‚Â°C\n", temperature->valuedouble);
-printf("Humidity: %.2f%%\n", humidity->valuedouble);
-printf("Description: %s\n", description->valuestring);
-// Clean up
-cJSON_Delete(json);
-free(buffer);
-}
-return 0;
+
+int main(void) {
+    CURL *curl;
+    CURLcode res;
+
+    struct MemoryStruct chunk;
+    chunk.memory = malloc(1);
+    chunk.size = 0;
+
+    curl_global_init(CURL_GLOBAL_ALL);
+
+    curl = curl_easy_init();
+    if(curl) {
+        char url[128];
+        char city[32];
+
+        printf("Enter city name: ");
+        scanf("%s", city);
+
+        snprintf(url, sizeof(url), "http://api.openweathermap.org/data/2.5/weather?q=%s&appid=3f92114c01a3d0f4c9962e0f1004278a", city);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeMemoryCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
+
+        res = curl_easy_perform(curl);
+
+        if(res != CURLE_OK) {
+            printf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        } else {
+            struct json_object *jobj = json_tokener_parse(chunk.memory);
+
+            struct json_object *jweather;
+            json_object_object_get_ex(jobj, "weather", &jweather);
+
+            struct json_object *jdescription;
+            json_object_object_get_ex(json_object_array_get_idx(jweather, 0), "description", &jdescription);
+
+            struct json_object *jmain;
+            json_object_object_get_ex(jobj, "main", &jmain);
+
+            struct json_object *jtemp;
+            json_object_object_get_ex(jmain, "temp", &jtemp);
+
+            struct json_object *jhumidity;
+            json_object_object_get_ex(jmain, "humidity", &jhumidity);
+
+            printf("City: %s\n", city);
+            printf("Weather: %s\n", json_object_get_string(jdescription));
+            printf("Temperature: %.2f\n", json_object_get_double(jtemp) - 273.15);
+            printf("Humidity: %d%%\n", json_object_get_int(jhumidity));
+        }
+
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+
+    free(chunk.memory);
+
+    return 0;
 }
